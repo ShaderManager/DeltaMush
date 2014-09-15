@@ -30,5 +30,6 @@ MStatus uninitializePlugin(MObject plugin_obj)
 
 	CHECK_MSTATUS_AND_RETURN_IT(plugin.deregisterCommand(BindRestCmd::cmd_name));
 
+	CHECK_MSTATUS_AND_RETURN_IT(plugin.deregisterNode(DeltaMushDeformer::type_id));
 	return MStatus::kSuccess;
 }

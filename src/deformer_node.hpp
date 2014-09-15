@@ -21,6 +21,11 @@ public:
 		return new DeltaMushDeformer();
 	}
 
+	// Attributes
+	static MObject attr_smooth_iterations;
+	static MObject attr_delta_offsets;
+	static MObject attr_deformer_mode;
+
 private:
 	DeltaMushDeformer();
 
