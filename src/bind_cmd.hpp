@@ -16,7 +16,6 @@ public:
 
 private:
 	MObject m_target_deformer;
-	MObject m_target_mesh;
 
 	BindRestCmd()
 	{
