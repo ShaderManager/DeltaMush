@@ -21,6 +21,7 @@ MObject DeltaMushDeformer::attr_smooth_iterations;
 MObject DeltaMushDeformer::attr_delta_offsets;
 MObject DeltaMushDeformer::attr_deformer_mode;
 MObject DeltaMushDeformer::attr_rest_mesh;
+MObject DeltaMushDeformer::attr_weight_by_distance;
 
 MStatus DeltaMushDeformer::initializer()
 {
@@ -44,6 +45,9 @@ MStatus DeltaMushDeformer::initializer()
 	enum_attr.addField("Delta Mush", Deformer_DeltaMush);
 	enum_attr.addField("Laplacian smooth", Deformer_LaplacianSmooth);
 
+	attr_weight_by_distance = num_attr.create("weightByDistance", "diwt", MFnNumericData::kBoolean, 1, &status);
+	CHECK_MSTATUS_AND_RETURN_IT(status);
+
 	attr_rest_mesh = typed_attr.create("restMesh", "rest", MFnData::kMesh, &status);
 	CHECK_MSTATUS_AND_RETURN_IT(status);
 	typed_attr.setHidden(true);
@@ -52,6 +56,7 @@ MStatus DeltaMushDeformer::initializer()
 	CHECK_MSTATUS_AND_RETURN_IT(addAttribute(attr_delta_offsets));
 	CHECK_MSTATUS_AND_RETURN_IT(addAttribute(attr_deformer_mode));
 	CHECK_MSTATUS_AND_RETURN_IT(addAttribute(attr_rest_mesh));
+	CHECK_MSTATUS_AND_RETURN_IT(addAttribute(attr_weight_by_distance));
 
 	CHECK_MSTATUS_AND_RETURN_IT(attributeAffects(attr_smooth_iterations, outputGeom));
 	CHECK_MSTATUS_AND_RETURN_IT(attributeAffects(attr_delta_offsets, outputGeom));
@@ -59,6 +64,8 @@ MStatus DeltaMushDeformer::initializer()
 	CHECK_MSTATUS_AND_RETURN_IT(attributeAffects(attr_rest_mesh, outputGeom));
 	CHECK_MSTATUS_AND_RETURN_IT(attributeAffects(attr_rest_mesh, attr_delta_offsets));
 	CHECK_MSTATUS_AND_RETURN_IT(attributeAffects(attr_smooth_iterations, attr_delta_offsets));
+	CHECK_MSTATUS_AND_RETURN_IT(attributeAffects(attr_weight_by_distance, attr_delta_offsets));
+	CHECK_MSTATUS_AND_RETURN_IT(attributeAffects(attr_weight_by_distance, outputGeom));
 
 	return MStatus::kSuccess;
 }
@@ -67,7 +74,7 @@ DeltaMushDeformer::DeltaMushDeformer()
 {
 }
 
-void DeltaMushDeformer::smooth_mesh(MFnMesh& mesh, int num_iterations, std::vector<MPoint>& points, 
+void DeltaMushDeformer::smooth_mesh(MFnMesh& mesh, int num_iterations, bool weightByDistance, std::vector<MPoint>& points, 
 									std::vector<MVector>& normals, std::vector<MVector>& tangents)
 {
 	// Build adjacency table. Used for fast searching of one-ring neighborhood
@@ -91,7 +98,7 @@ void DeltaMushDeformer::smooth_mesh(MFnMesh& mesh, int num_iterations, std::vect
 	for (int i = 0; i < num_iterations; i++)
 	{
 		tbb::parallel_for(0, mesh.numVertices(),
-			[src_vb, dest_vb, &adjacency](int vert_id)
+			[src_vb, dest_vb, &adjacency, weightByDistance](int vert_id)
 		{
 			const MPoint& base_point = (*src_vb)[vert_id];
 			MVector laplacian;
@@ -102,19 +109,29 @@ void DeltaMushDeformer::smooth_mesh(MFnMesh& mesh, int num_iterations, std::vect
 			{
 				const MPoint& vert = (*src_vb)[neighbor];				
 
-#ifdef WEIGHT_AVERAGE
-				laplacian = laplacian + (vert - base_point);
-				total_weight += 1.0;
-#else
-				const double edge_cost = 1.0 / vert.distanceTo(base_point); // Weight by inverse distance. It is called Modified Laplacian Smoothing
-				laplacian = laplacian + (vert - base_point) * edge_cost;
-				total_weight += edge_cost;
-#endif
+				if (weightByDistance)
+				{
+					double edge_cost = vert.distanceTo(base_point); // Weight by inverse distance. It is called Modified Laplacian Smoothing
+
+					if (edge_cost < 10e-5)
+						continue;
+
+					edge_cost = 1.0 / edge_cost;
+
+					//laplacian = laplacian + (vert - base_point) * edge_cost;
+					laplacian = laplacian + vert * edge_cost;
+					total_weight += edge_cost;
+				}
+				else
+				{
+					laplacian = laplacian + vert;
+					total_weight += 1.0;
+				}		
 			}
 
 			if (total_weight > 0)
 			{
-				(*dest_vb)[vert_id] = base_point + laplacian / total_weight;
+				(*dest_vb)[vert_id] = laplacian / total_weight;
 			}
 			else
 			{
@@ -143,7 +160,19 @@ void DeltaMushDeformer::smooth_mesh(MFnMesh& mesh, int num_iterations, std::vect
 				i,
 				(i + 1) % vlist.length(),
 				(i - 1 >= 0) ? i - 1 : vlist.length() - 1
-			};
+			};			
+
+			const auto& base_point = points[vlist[id[0]]];
+			const auto edge1 = points[vlist[id[1]]] - base_point;
+			const auto edge2 = points[vlist[id[2]]] - base_point;
+
+			MVector tangent;
+			//MVector normal = ((edge1 * edge2) * (edge1 ^ edge2)).normal();
+			MVector normal = ((edge1 ^ edge2)).normal();
+
+			normals[vlist[i]] = normals[vlist[i]] + normal;
+
+			//tangent = (edge1 - normal * (edge1 * normal)).normal();
 
 			float central_u, central_v;
 			float left_u, left_v;
@@ -153,20 +182,12 @@ void DeltaMushDeformer::smooth_mesh(MFnMesh& mesh, int num_iterations, std::vect
 			mesh.getPolygonUV(face_id, id[1], left_u, left_v);
 			mesh.getPolygonUV(face_id, id[2], right_u, right_v);
 
-			const auto& base_point = points[vlist[i]];
-			const auto edge1 = points[vlist[id[1]]] - base_point;
-			const auto edge2 = points[vlist[id[2]]] - base_point;
-
-			normals[vlist[i]] = normals[vlist[i]] + (edge1 ^ edge2).normal();
-
 			float u1 = left_u - central_u;
 			float u2 = right_u - central_u;
 			float v1 = left_v - central_v;
 			float v2 = right_v - central_v;
 
-			float r = (u1 * v2 - u2 * v1);
-
-			MVector tangent;
+			float r = (u1 * v2 - u2 * v1);			
 
 			if (fabs(r) > 10e-5)
 			{
@@ -202,6 +223,8 @@ MStatus DeltaMushDeformer::compute(const MPlug& plug, MDataBlock& dataBlock)
 			return MStatus::kFailure;
 		}
 
+		const bool weight_by_dist = dataBlock.inputValue(attr_weight_by_distance).asBool();
+
 		MDataHandle delta_offsets_handle = dataBlock.outputValue(attr_delta_offsets);
 
 		MFnMeshData mesh_data(rest_mesh_handle.data());
@@ -219,7 +242,7 @@ MStatus DeltaMushDeformer::compute(const MPlug& plug, MDataBlock& dataBlock)
 
 		const int num_iterations = dataBlock.inputValue(attr_smooth_iterations).asInt();
 
-		smooth_mesh(mesh, num_iterations, points, normals, tangents);
+		smooth_mesh(mesh, num_iterations, weight_by_dist, points, normals, tangents);
 		
 		MVectorArray delta_offsets;		
 		delta_offsets.setLength(mesh.numVertices());
@@ -235,7 +258,7 @@ MStatus DeltaMushDeformer::compute(const MPlug& plug, MDataBlock& dataBlock)
 
 			// Orthonormalize through Gram–Schmidt process
 			MVector tangent = (tangents[vert_id] - normal * (tangents[vert_id] * normal)).normal();
-			MVector bitangent = normal ^ tangent;
+			MVector bitangent = tangent ^ normal;
 
 			MMatrix coord_frame;
 
@@ -312,7 +335,9 @@ MStatus DeltaMushDeformer::compute(const MPlug& plug, MDataBlock& dataBlock)
 				points[vert_id] = src_points[vert_id];
 			}
 
-			smooth_mesh(mesh, num_iterations, points, normals, tangents);			
+			const bool weight_by_dist = dataBlock.inputValue(attr_weight_by_distance).asBool();
+
+			smooth_mesh(mesh, num_iterations, weight_by_dist, points, normals, tangents);			
 
 			const short deformer_mode = dataBlock.inputValue(attr_deformer_mode).asShort();
 
@@ -330,7 +355,7 @@ MStatus DeltaMushDeformer::compute(const MPlug& plug, MDataBlock& dataBlock)
 						MVector normal = normals[vert_id].normal();
 						MVector tangent = (tangents[vert_id] - normal * (tangents[vert_id] * normal)).normal();
 
-						MVector bitangent = normal ^ tangent;
+						MVector bitangent = tangent ^ normal;
 
 						MMatrix coord_frame;
 

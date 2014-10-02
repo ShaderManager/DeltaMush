@@ -19,7 +19,7 @@ class DeltaMushDeformer : public MPxDeformerNode
 	enum DeformerMode
 	{
 		Deformer_DeltaMush,
-		Deformer_LaplacianSmooth
+		Deformer_LaplacianSmooth,
 	};
 
 public:
@@ -38,12 +38,13 @@ public:
 	static MObject attr_delta_offsets;
 	static MObject attr_deformer_mode;
 	static MObject attr_rest_mesh;
+	static MObject attr_weight_by_distance;
 
 private:
 	DeltaMushDeformer();
 
 	MStatus compute(const MPlug& plug, MDataBlock& dataBlock);
 
-	void smooth_mesh(MFnMesh& mesh, int num_iterations, std::vector<MPoint>& points, 
+	void smooth_mesh(MFnMesh& mesh, int num_iterations, bool weightByDistance, std::vector<MPoint>& points, 
 		std::vector<MVector>& normals, std::vector<MVector>& tangents);
 };
